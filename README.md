@@ -1,22 +1,29 @@
 # Edge-Deployed Object Detection and Autonomous Waste Sorting Robot
 
 <p align="center">
+  <img src="https://img.shields.io/badge/Platform-Jetson%20Orin-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="Jetson Orin badge" />
+  <img src="https://img.shields.io/badge/Model-YOLOv11%20%2B%20TensorRT-111111?style=for-the-badge" alt="YOLOv11 TensorRT badge" />
+  <img src="https://img.shields.io/badge/Result-Full%20Marks-1F8B4C?style=for-the-badge" alt="Full marks badge" />
+  <img src="https://img.shields.io/badge/Focus-Embedded%20AI%20Robotics-2F5BEA?style=for-the-badge" alt="Embedded AI robotics badge" />
+</p>
+
+<p align="center">
   <img src="air_robot.jpg" alt="Final robot platform used in the project" width="520" />
 </p>
 
-This repository is a showcase of my EIE3360 final project work on an autonomous sorting robot built for two course mini-games. The system combined onboard YOLOv11 detection on Jetson Orin, STM32-based actuation, custom state-machine control, and practical mechanical redesign to complete real-world sorting tasks under competition constraints.
+This repository documents my EIE3360 final project work on an autonomous waste-sorting robot built for two real-world mini-games under course competition constraints. The system combined onboard YOLOv11 detection on Jetson Orin, STM32-based actuation, custom task-state control, and low-cost mechanical redesign to complete autonomous sorting without human intervention after start.
 
-It is published as a portfolio project to document the engineering outcome, design decisions, and final results. It is not intended to be a turnkey reproduction package.
+This is a **showcase repository**: it is designed to present the engineering outcome, implementation quality, and final results clearly on GitHub. It is not intended to be a turnkey reproduction package.
 
 [Full Report](EIE3360_Final_Project_Report_Group24.pdf) • [Visual Simulator](eie_3360_visual_simulator.html) • [Game One Code](game01.py) • [Game Two Code](game02.py)
 
-## Project Outcome
+## Snapshot
 
 - Achieved **full marks** in the Week 13 final demonstration.
 - Ran **real-time onboard inference at about 20-40 FPS** on Jetson Orin.
 - Trained and deployed a **10-class YOLOv11 detector** exported as a TensorRT engine.
-- Built separate but reusable control logic for **two autonomous games** with target locking, beacon-guided delivery, and zone-specific drop routing.
-- Solved major hardware failure points through **chassis drilling, motor repositioning, and claw redesign**.
+- Implemented reusable autonomous logic for **two different sorting games**.
+- Solved critical real-robot issues through **hardware and software co-design**, not model tuning alone.
 
 ## What This Robot Does
 
@@ -32,6 +39,18 @@ The robot sorts mixed objects by material:
 - Vita Lemon Tea and Vita Soybean Drink boxes go to the **right beverage-carton zone**
 
 The final system used green and red beacon markers as visual references for reliable delivery instead of relying only on dead reckoning.
+
+## System Overview
+
+The deployed loop was:
+
+1. onboard camera captures the arena view
+2. Jetson Orin runs YOLOv11 inference
+3. Python state-machine logic selects targets and decides motion
+4. control commands are sent to STM32 for wheel and gripper actuation
+5. the robot re-observes the arena after each motion segment and updates the next action
+
+This mattered because the final system was built around **closed-loop behaviour in a real arena**, not offline detection performance alone.
 
 ## Showcase Assets
 
@@ -81,6 +100,16 @@ The strongest lesson from the project was that embedded AI performance depended 
 - adding two pencils and four rubber bands to widen the gripper for box handling
 
 This low-cost claw modification made it possible to handle both cans and cartons with one robot.
+
+## Selected Engineering Problems
+
+| Problem | Why it mattered | Final solution |
+| --- | --- | --- |
+| Wheel jamming inside chassis | The robot could not move reliably enough for any autonomous task | Drilled new holes and repositioned motors outward |
+| Close-range class flicker near can tops | The robot could switch targets at the worst possible moment | Added target locking and proxy tracking |
+| One claw had to handle both cans and boxes | A single grasp geometry was not reliable for both object families | Removed sleeves and extended the claw with pencils and rubber bands |
+| Repeated drops could knock over earlier placements | Later deliveries could reduce score even after successful grasping | Used beacon-guided multi-route drop planning |
+| Good offline metrics still failed in the arena | Real performance depended on motion drift, camera angle, and battery state | Tuned thresholds and control logic through repeated full-field tests |
 
 ## Key Results
 
