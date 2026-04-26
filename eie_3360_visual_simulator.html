@@ -1,0 +1,1606 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EIE3360 Visual Simulator</title>
+  <style>
+    :root {
+      --bg: #f5f5f2;
+      --panel: #f8f8f6;
+      --ink: #202429;
+      --muted: #606875;
+      --line: #d2d4d8;
+      --accent: #7265ff;
+      --good: #4ba363;
+      --warn: #e4723a;
+      --teal: #32929e;
+      --card: #ffffff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: linear-gradient(180deg, #fafaf8 0%, #f2f3ef 100%);
+      color: var(--ink);
+    }
+    .wrap {
+      max-width: 1560px;
+      margin: 0 auto;
+      padding: 24px 28px 32px;
+    }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 24px;
+      margin-bottom: 16px;
+    }
+    .title h1 {
+      margin: 0;
+      font-size: 30px;
+      line-height: 1.15;
+      letter-spacing: -0.02em;
+    }
+    .title p {
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.45;
+      max-width: 780px;
+    }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      justify-content: flex-end;
+      align-items: center;
+      min-width: min(380px, 100%);
+    }
+    button, .chip {
+      border: 1px solid #d7d9dd;
+      background: rgba(255,255,255,0.88);
+      color: var(--ink);
+      border-radius: 999px;
+      padding: 10px 14px;
+      font-size: 14px;
+      cursor: pointer;
+      transition: 120ms ease;
+      box-shadow: 0 1px 0 rgba(0,0,0,0.02);
+    }
+    button:hover { transform: translateY(-1px); }
+    button.active {
+      background: var(--accent);
+      color: white;
+      border-color: transparent;
+    }
+    .chip {
+      cursor: default;
+      color: var(--muted);
+    }
+    .viewer {
+      background: rgba(255,255,255,0.72);
+      border: 1px solid #dcdee2;
+      border-radius: 24px;
+      padding: 16px;
+      overflow: hidden;
+      box-shadow: 0 12px 30px rgba(0,0,0,0.04);
+    }
+    canvas {
+      width: 100%;
+      height: auto;
+      display: block;
+      border-radius: 18px;
+      background: #f5f5f2;
+      aspect-ratio: 1440 / 860;
+    }
+    .foot {
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+    .foot strong { color: var(--ink); }
+    @media (max-width: 1160px) {
+      .wrap {
+        padding: 18px 18px 24px;
+      }
+      .topbar {
+        flex-direction: column;
+      }
+      .controls {
+        justify-content: flex-start;
+        min-width: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div class="title">
+        <h1>EIE3360 — Game 1 / Game 2 Visual Logic Simulator</h1>
+        <p>
+          A clean 2D simulation based on the uploaded <strong>game01.py</strong> and <strong>game02.py</strong> logic.
+          It focuses on the real points that mattered in development: target locking, left drift, pulse correction,
+          can-versus-box gripping, beacon search, and zone-specific drop routing.
+        </p>
+      </div>
+      <div class="controls">
+        <button id="btnGame1" class="active">Game 1</button>
+        <button id="btnGame2">Game 2</button>
+        <button id="btnPlayPause">Pause</button>
+        <button id="btnReset">Reset</button>
+        <button id="btnSpeed">Speed: 1.0×</button>
+        <div class="chip" id="chipState">State: —</div>
+      </div>
+    </div>
+
+    <div class="viewer">
+      <canvas id="simCanvas" width="1440" height="860"></canvas>
+    </div>
+
+    <div class="foot">
+      <strong>How to use:</strong> switch between Game 1 and Game 2, pause if you want to inspect a frame, and reset to replay.
+      This is not a full physics simulator. It is a polished logic visualisation of the real state-machine behaviour, including
+      the practical issues you described in development.
+    </div>
+  </div>
+
+  <script>
+    const W = 1440;
+    const H = 860;
+    const FIELD_X0 = 64;
+    const FIELD_Y0 = 86;
+    const FIELD_PX = 700;
+    const FIELD_X1 = FIELD_X0 + FIELD_PX;
+    const FIELD_Y1 = FIELD_Y0 + FIELD_PX;
+    const PANEL_X0 = 808;
+    const PANEL_X1 = W - 38;
+
+    const ARENA = 138.0;
+    const ZONE_R = 24.5;
+    const TOP_COLLECTION = { x: ARENA / 2, y: 0 };
+    const BOTTOM_START = { x: ARENA / 2, y: ARENA };
+    const LEFT_ZONE = { x: 0, y: ARENA / 2 };
+    const RIGHT_ZONE = { x: ARENA, y: ARENA / 2 };
+
+    const COLORS = {
+      bg: '#f5f5f2',
+      panel: '#f8f8f6',
+      ink: '#202429',
+      muted: '#606875',
+      line: '#d2d4d8',
+      fieldFill: '#fcfcfa',
+      fieldBorder: '#ab6317',
+      yellowZone: '#f3e96f',
+      pinkZone: '#ef92c2',
+      robot: '#2c323a',
+      wheel: '#1f72b0',
+      wheel2: '#54bfb6',
+      claw: '#d5ba63',
+      accent: '#7265ff',
+      warn: '#e4723a',
+      good: '#4ba363',
+      teal: '#32929e',
+      card: '#ffffff',
+      warnBg: '#fff1e3'
+    };
+
+    const ITEM_STYLE = {
+      'coca cola can': { color: '#cd2a2a', short: 'Coke' },
+      'coca cola can zero sugar': { color: '#7e1c1c', short: 'Zero' },
+      'sprite': { color: '#2ba550', short: 'Sprite' },
+      'vita lemon tea': { color: '#e0b634', short: 'VLT' },
+      'vita soybean drink': { color: '#ece4cb', short: 'Vita' },
+      'green ball': { color: '#4abb4d', short: 'G' },
+      'red ball': { color: '#e14e52', short: 'R' },
+      'fanta': { color: '#f2862f', short: 'Fanta' },
+      'schweppe': { color: '#8cc24f', short: 'Sch' },
+      'pencil': { color: '#eebe50', short: 'Pencil' },
+    };
+
+    const GAME1_DROP_SPOTS = [
+      { x: 12.5, y: 80 },
+      { x: 16, y: 69 },
+      { x: 12.5, y: 58 },
+    ];
+
+    const GAME2_LEFT_DROP_SPOTS = [
+      { x: 12.5, y: 77 },
+      { x: 16, y: 61 },
+    ];
+
+    const GAME2_RIGHT_DROP_SPOTS = [
+      { x: 122, y: 61 },
+      { x: 125.5, y: 77 },
+    ];
+
+    const SPEEDS = [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0];
+
+    function clamp(v, a, b) {
+      return Math.max(a, Math.min(b, v));
+    }
+
+    function wrapAngle(a) {
+      while (a > Math.PI) a -= Math.PI * 2;
+      while (a < -Math.PI) a += Math.PI * 2;
+      return a;
+    }
+
+    function dist(a, b) {
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    }
+
+    function worldToPx(x, y) {
+      return {
+        x: FIELD_X0 + (x / ARENA) * FIELD_PX,
+        y: FIELD_Y0 + (y / ARENA) * FIELD_PX,
+      };
+    }
+
+    function pxRadius(cm) {
+      return (cm / ARENA) * FIELD_PX;
+    }
+
+    function itemFamily(name) {
+      if (['coca cola can', 'sprite', 'coca cola can zero sugar', 'fanta', 'schweppe'].includes(name)) return 'can';
+      if (['vita lemon tea', 'vita soybean drink'].includes(name)) return 'box';
+      if (['green ball', 'red ball', 'pencil'].includes(name)) return 'aux';
+      return 'obj';
+    }
+
+    function createItem(name, x, y, size, kind, targetSide = '', styleName = '') {
+      return {
+        name,
+        x,
+        y,
+        size,
+        kind,
+        targetSide,
+        styleName: styleName || name,
+        carried: false,
+        delivered: false,
+      };
+    }
+
+    function createRobot() {
+      return {
+        x: 69,
+        y: 126,
+        theta: -Math.PI / 2,
+        width: 12,
+        height: 14,
+        carrying: null,
+        clawMode: 'can',
+      };
+    }
+
+    function createContext(gameName, items, initialState, phaseLabel, metrics) {
+      const robot = createRobot();
+      return {
+        gameName,
+        items,
+        robot,
+        state: initialState,
+        phaseLabel,
+        metrics,
+        time: 0,
+        notes: [],
+        path: [{ x: robot.x, y: robot.y }],
+        command: 'STOP',
+        currentTarget: null,
+        lockedTarget: null,
+        detection: { visible: false },
+        rawTargetName: '',
+        lockedTargetName: '',
+        targetSide: '',
+        alignmentThresholds: { x1: 340, x2: 460 },
+        dropCountLeft: 0,
+        dropCountRight: 0,
+        game1DropIndex: 0,
+        missionFinished: false,
+        highlightIssue: '',
+        timerUntil: 0,
+        pulseScope: '',
+        pulseDir: 0,
+        correctionPulseUntil: 0,
+        settleUntil: 0,
+        lastNoteTimes: {},
+      };
+    }
+
+    function addNote(ctx, key, text, category = 'info', cooldown = 2.0) {
+      const last = ctx.lastNoteTimes[key] ?? -1e9;
+      if (ctx.time - last >= cooldown) {
+        ctx.notes.push({ t: ctx.time, text, category });
+        ctx.lastNoteTimes[key] = ctx.time;
+      }
+    }
+
+    function setCommand(ctx, command) {
+      ctx.command = command;
+    }
+
+    function commandMotion(command, family = 'can') {
+      if (command.includes('SEARCH')) return { v: 0, w: deg(36) };
+      if (command.includes('TURN_LEFT') || command.endsWith('_LEFT')) return { v: 0, w: deg(-52) };
+      if (command.includes('TURN_RIGHT') || command.endsWith('_RIGHT')) return { v: 0, w: deg(52) };
+      if (command.includes('FORWARD') || command.includes('APPROACH') || command.includes('SHIFT_FORWARD')) {
+        return { v: family === 'box' ? 13 : 15, w: 0 };
+      }
+      if (command.includes('RETREAT') || command.includes('BACK')) return { v: -16, w: 0 };
+      return { v: 0, w: 0 };
+    }
+
+    function deg(v) {
+      return v * Math.PI / 180;
+    }
+
+    function applyMotion(ctx, dt, family = 'can') {
+      const { v, w } = commandMotion(ctx.command, family);
+      let drift = 0;
+      if (Math.abs(v) > 0) {
+        drift = deg(v > 0 ? -4.2 : -2.4);
+      }
+      ctx.robot.theta = wrapAngle(ctx.robot.theta + (w + drift) * dt);
+      ctx.robot.x += Math.cos(ctx.robot.theta) * v * dt;
+      ctx.robot.y += Math.sin(ctx.robot.theta) * v * dt;
+      ctx.robot.x = clamp(ctx.robot.x, 5, ARENA - 5);
+      ctx.robot.y = clamp(ctx.robot.y, 5, ARENA - 5);
+
+      const last = ctx.path[ctx.path.length - 1];
+      if (!last || Math.hypot(last.x - ctx.robot.x, last.y - ctx.robot.y) > 0.35) {
+        ctx.path.push({ x: ctx.robot.x, y: ctx.robot.y });
+      }
+
+      if (ctx.robot.carrying) {
+        const offset = ctx.robot.clawMode === 'can' ? 9 : 10;
+        ctx.robot.carrying.x = ctx.robot.x + Math.cos(ctx.robot.theta) * offset;
+        ctx.robot.carrying.y = ctx.robot.y + Math.sin(ctx.robot.theta) * offset;
+        ctx.robot.carrying.carried = true;
+      }
+    }
+
+    function visionMeasure(ctx, item, rawClass = null, fovDeg = 62) {
+      const det = {
+        visible: false,
+        screenX: null,
+        widthPx: null,
+        rawClass: rawClass || '',
+        lockedClass: ctx.lockedTarget ? ctx.lockedTarget.name : '',
+        distanceCm: null,
+        angleDeg: null,
+      };
+      if (!item) return det;
+      const dx = item.x - ctx.robot.x;
+      const dy = item.y - ctx.robot.y;
+      let d = Math.hypot(dx, dy);
+      if (d < 1e-6) d = 1e-6;
+      const angle = wrapAngle(Math.atan2(dy, dx) - ctx.robot.theta);
+      const half = deg(fovDeg / 2);
+      if (Math.abs(angle) > half || d > 125) return det;
+      const screenX = 400 + (Math.tan(angle) / Math.tan(half)) * 400;
+      const widthPx = (item.size / d) * 3000;
+      det.visible = true;
+      det.screenX = screenX;
+      det.widthPx = widthPx;
+      det.rawClass = rawClass || item.name;
+      det.lockedClass = ctx.lockedTarget ? ctx.lockedTarget.name : item.name;
+      det.distanceCm = d;
+      det.angleDeg = angle * 180 / Math.PI;
+      return det;
+    }
+
+    function startPulse(ctx, direction, scope, pulseDur, settleDur, prefix) {
+      ctx.pulseDir = direction;
+      ctx.pulseScope = scope;
+      ctx.correctionPulseUntil = ctx.time + pulseDur;
+      ctx.settleUntil = ctx.correctionPulseUntil + settleDur;
+      setCommand(ctx, `${prefix}_${direction < 0 ? 'LEFT' : 'RIGHT'}`);
+    }
+
+    function updatePulseCommand(ctx, scope, prefix) {
+      if (ctx.pulseScope !== scope) return false;
+      if (ctx.time < ctx.correctionPulseUntil) {
+        setCommand(ctx, `${prefix}_${ctx.pulseDir < 0 ? 'LEFT' : 'RIGHT'}`);
+        return true;
+      }
+      if (ctx.time < ctx.settleUntil) {
+        setCommand(ctx, 'STOP');
+        return true;
+      }
+      ctx.pulseScope = '';
+      return false;
+    }
+
+    function initGame1() {
+      const ctx = createContext(
+        'Game One',
+        [
+          createItem('green ball', 9.5, 69, 7, 'beacon'),
+          createItem('fanta', 9.5, 74, 5.2, 'beacon_base'),
+          createItem('red ball', 128.5, 69, 7, 'beacon'),
+          createItem('schweppe', 128.5, 74, 5.2, 'beacon_base'),
+          createItem('coca cola can', 56, 18, 5.2, 'target', 'left'),
+          createItem('coca cola can zero sugar', 65, 18, 5.2, 'target', 'skip'),
+          createItem('coca cola can', 74, 18, 5.2, 'target', 'left'),
+          createItem('coca cola can', 83, 18, 5.2, 'target', 'left'),
+          createItem('pencil', 75, 124, 10, 'aux')
+        ],
+        'SEARCH_SUGAR_CAN',
+        'Pick three regular Coca-Cola cans and avoid the zero sugar can.',
+        { goal: '3 valid cans to aluminium zone', conf: '0.8', issue: 'left drift + target flicker' }
+      );
+      addNote(ctx, 'g1start', 'Simulation starts from the lower semi-circle.', 'info', 0);
+      addNote(ctx, 'g1goal', 'Game One: select only regular Coca-Cola cans from left to right.', 'info', 0);
+      return ctx;
+    }
+
+    function initGame2() {
+      const ctx = createContext(
+        'Game Two',
+        [
+          createItem('green ball', 9.5, 69, 7, 'beacon'),
+          createItem('fanta', 9.5, 74, 5.2, 'beacon_base'),
+          createItem('red ball', 128.5, 69, 7, 'beacon'),
+          createItem('schweppe', 128.5, 74, 5.2, 'beacon_base'),
+          createItem('coca cola can', 54, 18, 5.2, 'target', 'left'),
+          createItem('sprite', 64, 18, 5.2, 'target', 'left'),
+          createItem('vita lemon tea', 74, 18, 6.5, 'target', 'right'),
+          createItem('vita soybean drink', 84, 18, 6.5, 'target', 'right')
+        ],
+        'STARTUP_WAIT',
+        'Sort two cans to the left and two beverage cartons to the right.',
+        { goal: '2 aluminium + 2 carton', conf: '0.6', issue: 'drift + class flicker near top views' }
+      );
+      addNote(ctx, 'g2start', 'Simulation starts with a short pause before the autonomous search begins.', 'info', 0);
+      addNote(ctx, 'g2goal', 'Game Two: sort cans to the left zone and cartons to the right zone.', 'info', 0);
+      return ctx;
+    }
+
+    function game1RemainingRegular(ctx) {
+      return ctx.items.filter(i => i.name === 'coca cola can' && !i.delivered && !i.carried).sort((a, b) => a.x - b.x);
+    }
+
+    function game1Zero(ctx) {
+      return ctx.items.find(i => i.name === 'coca cola can zero sugar');
+    }
+
+    function game1LeftBeacon(ctx) {
+      return ctx.items.find(i => i.name === 'green ball');
+    }
+
+    function game2Beacon(ctx, side) {
+      return ctx.items.find(i => i.name === (side === 'left' ? 'green ball' : 'red ball'));
+    }
+
+    function game2TopRemaining(ctx) {
+      return ctx.items.filter(i => i.kind === 'target' && !i.delivered && !i.carried);
+    }
+
+    function game2ChooseLeftmost(ctx) {
+      return game2TopRemaining(ctx)
+        .filter(i => !(i.targetSide === 'left' && ctx.dropCountLeft >= 2) && !(i.targetSide === 'right' && ctx.dropCountRight >= 2))
+        .sort((a, b) => a.x - b.x);
+    }
+
+    function game1RawTarget(ctx) {
+      const item = ctx.currentTarget || ctx.lockedTarget;
+      if (!item) return { item: null, rawClass: null };
+      let rawClass = item.name;
+      const zero = game1Zero(ctx);
+      const d = dist({ x: ctx.robot.x, y: ctx.robot.y }, item);
+      if (d < 28 && zero && !zero.delivered && Math.abs(item.x - zero.x) < 11 && Math.sin(ctx.time * 5.0) > 0.82) {
+        rawClass = 'coca cola can zero sugar';
+        addNote(ctx, 'g1flicker', 'Near the cans, raw detection briefly flips to zero sugar; target lock prevents switching.', 'warn', 7);
+        ctx.highlightIssue = 'raw flicker';
+      }
+      return { item, rawClass };
+    }
+
+    function game2RawTarget(ctx) {
+      const item = ctx.currentTarget || ctx.lockedTarget;
+      if (!item) return { item: null, rawClass: null };
+      let rawClass = item.name;
+      const d = dist({ x: ctx.robot.x, y: ctx.robot.y }, item);
+      if (d < 25) {
+        if (item.targetSide === 'left' && Math.sin(ctx.time * 5.5) > 0.84) {
+          rawClass = 'schweppe';
+          addNote(ctx, 'g2flicker_can', 'Near the can tops, the raw label flickers between similar cans, but the locked target stays fixed.', 'warn', 7);
+          ctx.highlightIssue = 'raw flicker';
+        } else if (item.targetSide === 'right' && Math.cos(ctx.time * 4.8) > 0.87) {
+          rawClass = 'coca cola can';
+          addNote(ctx, 'g2flicker_box', 'When the box is very close, raw detection briefly merges with a nearby can-like top view; lock logic keeps the box target.', 'warn', 8);
+          ctx.highlightIssue = 'merged detection';
+        }
+      }
+      return { item, rawClass };
+    }
+
+    function updateGame1(ctx, dt) {
+      ctx.highlightIssue = '';
+      const regulars = game1RemainingRegular(ctx);
+      const leftBeacon = game1LeftBeacon(ctx);
+
+      if (ctx.state === 'SEARCH_SUGAR_CAN') {
+        ctx.robot.clawMode = 'can';
+        if (regulars.length === 0) {
+          ctx.state = 'FINISHED';
+          ctx.missionFinished = true;
+          setCommand(ctx, 'STOP');
+        } else {
+          const target = regulars[0];
+          ctx.currentTarget = target;
+          const det = visionMeasure(ctx, target);
+          if (det.visible) {
+            ctx.lockedTarget = target;
+            ctx.state = 'APPROACH_SUGAR_CAN';
+            addNote(ctx, 'g1lock', 'Leftmost valid can found and locked.', 'good', 0);
+            setCommand(ctx, 'STOP');
+          } else {
+            setCommand(ctx, 'SEARCH_RIGHT');
+          }
+        }
+      }
+
+      else if (ctx.state === 'APPROACH_SUGAR_CAN') {
+        const { item: target, rawClass } = game1RawTarget(ctx);
+        if (!target || target.delivered) {
+          ctx.state = 'SEARCH_SUGAR_CAN';
+          setCommand(ctx, 'SEARCH_RIGHT');
+        } else {
+          ctx.currentTarget = target;
+          const det = visionMeasure(ctx, target, rawClass);
+          ctx.detection = det;
+          ctx.rawTargetName = det.rawClass || '';
+          ctx.lockedTargetName = target.name;
+          ctx.alignmentThresholds = { x1: 340, x2: 460 };
+          if (!det.visible) {
+            setCommand(ctx, 'SEARCH_RIGHT');
+          } else {
+            if (updatePulseCommand(ctx, 'target', 'CORRECT')) {
+              ctx.highlightIssue = 'pulse correction';
+            } else if (det.screenX < 340) {
+              startPulse(ctx, -1, 'target', 0.16, 0.10, 'CORRECT');
+              addNote(ctx, 'g1leftpulse', 'The car drifts left during approach, so a short correction pulse is triggered.', 'warn', 2.8);
+              ctx.highlightIssue = 'left drift';
+            } else if (det.screenX > 460) {
+              startPulse(ctx, 1, 'target', 0.16, 0.10, 'CORRECT');
+              addNote(ctx, 'g1rightpulse', 'A small overshoot appears, so the robot corrects back in short pulses.', 'warn', 2.8);
+              ctx.highlightIssue = 'overshoot';
+            } else if (det.widthPx < 630 && det.distanceCm > 23) {
+              setCommand(ctx, 'APPROACH_FORWARD');
+            } else {
+              ctx.state = 'GRAB_SUGAR_CAN';
+              ctx.timerUntil = ctx.time + 0.55;
+              setCommand(ctx, 'STOP');
+              addNote(ctx, 'g1grab', 'The can is close enough, so the gripper closes and the robot pauses to secure it.', 'good', 0);
+            }
+          }
+        }
+      }
+
+      else if (ctx.state === 'GRAB_SUGAR_CAN') {
+        setCommand(ctx, 'STOP');
+        if (ctx.time >= ctx.timerUntil && ctx.lockedTarget) {
+          ctx.robot.carrying = ctx.lockedTarget;
+          ctx.lockedTarget.carried = true;
+          ctx.currentTarget = ctx.lockedTarget;
+          ctx.state = 'RETREAT_AFTER_GRAB';
+          ctx.timerUntil = ctx.time + 1.45;
+          setCommand(ctx, 'RETREAT');
+          addNote(ctx, 'g1carry', 'After grasping, the robot backs away before looking for the aluminium beacon.', 'good', 0);
+        }
+      }
+
+      else if (ctx.state === 'RETREAT_AFTER_GRAB') {
+        setCommand(ctx, 'RETREAT');
+        if (ctx.time >= ctx.timerUntil) {
+          ctx.state = 'TURN_LEFT_TO_BEACON';
+          ctx.timerUntil = ctx.time + 1.10;
+          setCommand(ctx, 'TURN_LEFT');
+          addNote(ctx, 'g1turn', 'The robot turns left to search for the green beacon.', 'info', 0);
+        }
+      }
+
+      else if (ctx.state === 'TURN_LEFT_TO_BEACON') {
+        const det = visionMeasure(ctx, leftBeacon);
+        if (det.visible) {
+          ctx.state = 'APPROACH_BEACON';
+          setCommand(ctx, 'STOP');
+        } else if (ctx.time >= ctx.timerUntil) {
+          ctx.state = 'SEARCH_LEFT_BEACON';
+          setCommand(ctx, 'TURN_LEFT');
+        } else {
+          setCommand(ctx, 'TURN_LEFT');
+        }
+      }
+
+      else if (ctx.state === 'SEARCH_LEFT_BEACON') {
+        const det = visionMeasure(ctx, leftBeacon);
+        if (det.visible) {
+          ctx.state = 'APPROACH_BEACON';
+          setCommand(ctx, 'STOP');
+          addNote(ctx, 'g1beacon', 'The green beacon comes into view and becomes the new alignment target.', 'good', 0);
+        } else {
+          setCommand(ctx, 'TURN_LEFT');
+        }
+      }
+
+      else if (ctx.state === 'APPROACH_BEACON') {
+        const det = visionMeasure(ctx, leftBeacon);
+        ctx.detection = det;
+        ctx.rawTargetName = det.visible ? 'green ball' : '';
+        ctx.lockedTargetName = 'green ball';
+        ctx.alignmentThresholds = { x1: 340, x2: 460 };
+        if (!det.visible) {
+          ctx.state = 'SEARCH_LEFT_BEACON';
+          setCommand(ctx, 'TURN_LEFT');
+        } else {
+          if (updatePulseCommand(ctx, 'beacon', 'BEACON_CORRECT')) {
+            ctx.highlightIssue = 'pulse correction';
+          } else if (det.screenX < 340) {
+            startPulse(ctx, -1, 'beacon', 0.14, 0.08, 'BEACON_CORRECT');
+          } else if (det.screenX > 460) {
+            startPulse(ctx, 1, 'beacon', 0.14, 0.08, 'BEACON_CORRECT');
+          } else if (det.widthPx < 205 && det.distanceCm > 30) {
+            setCommand(ctx, 'APPROACH_FORWARD');
+          } else {
+            const sign = [-1, 0, 1][ctx.game1DropIndex];
+            if (sign === 0) {
+              ctx.state = 'APPROACH_MID_DROP';
+              ctx.timerUntil = ctx.time + 0.78;
+              setCommand(ctx, 'APPROACH_FORWARD');
+              addNote(ctx, 'g1dropmid', 'The middle drop route is used to avoid pushing over the beacon base or previous cans.', 'info', 0);
+            } else {
+              ctx.state = 'TURN_TO_DROP_COLUMN';
+              ctx.timerUntil = ctx.time + (sign < 0 ? 0.48 : 0.62);
+              setCommand(ctx, sign < 0 ? 'TURN_LEFT' : 'TURN_RIGHT');
+              addNote(ctx, 'g1droproute', 'The robot shifts to a side drop route so each can has its own placement space.', 'info', 0);
+            }
+          }
+        }
+      }
+
+      else if (ctx.state === 'TURN_TO_DROP_COLUMN') {
+        const sign = [-1, 0, 1][ctx.game1DropIndex];
+        setCommand(ctx, sign < 0 ? 'TURN_LEFT' : 'TURN_RIGHT');
+        if (ctx.time >= ctx.timerUntil) {
+          ctx.state = 'DRIVE_TO_DROP_COLUMN';
+          ctx.timerUntil = ctx.time + 0.80;
+          setCommand(ctx, 'SHIFT_FORWARD');
+        }
+      }
+
+      else if (ctx.state === 'DRIVE_TO_DROP_COLUMN') {
+        setCommand(ctx, 'SHIFT_FORWARD');
+        if (ctx.time >= ctx.timerUntil) {
+          const sign = [-1, 0, 1][ctx.game1DropIndex];
+          ctx.state = 'TURN_BACK_FROM_DROP';
+          ctx.timerUntil = ctx.time + (sign !== 0 ? (sign > 0 ? 0.48 : 0.62) : 0);
+          setCommand(ctx, sign < 0 ? 'TURN_RIGHT' : 'TURN_LEFT');
+        }
+      }
+
+      else if (ctx.state === 'TURN_BACK_FROM_DROP') {
+        const sign = [-1, 0, 1][ctx.game1DropIndex];
+        if (sign === 0 || ctx.time >= ctx.timerUntil) {
+          ctx.state = 'APPROACH_DROP_AFTER_SHIFT';
+          ctx.timerUntil = ctx.time + 0.55;
+          setCommand(ctx, 'APPROACH_FORWARD');
+        } else {
+          setCommand(ctx, sign < 0 ? 'TURN_RIGHT' : 'TURN_LEFT');
+        }
+      }
+
+      else if (ctx.state === 'APPROACH_MID_DROP' || ctx.state === 'APPROACH_DROP_AFTER_SHIFT') {
+        setCommand(ctx, 'APPROACH_FORWARD');
+        if (ctx.time >= ctx.timerUntil) {
+          ctx.state = 'RELEASE_CAN';
+          ctx.timerUntil = ctx.time + 0.45;
+          setCommand(ctx, 'STOP');
+        }
+      }
+
+      else if (ctx.state === 'RELEASE_CAN') {
+        setCommand(ctx, 'STOP');
+        if (ctx.time >= ctx.timerUntil && ctx.robot.carrying) {
+          const item = ctx.robot.carrying;
+          const spot = GAME1_DROP_SPOTS[ctx.game1DropIndex];
+          item.x = spot.x; item.y = spot.y;
+          item.carried = false; item.delivered = true;
+          ctx.robot.carrying = null;
+          ctx.dropCountLeft += 1;
+          ctx.game1DropIndex += 1;
+          ctx.state = 'RETREAT_AFTER_DROP';
+          ctx.timerUntil = ctx.time + 1.45;
+          setCommand(ctx, 'RETREAT');
+          addNote(ctx, 'g1release', 'The can is released inside the aluminium zone and kept clear of the beacon.', 'good', 0);
+        }
+      }
+
+      else if (ctx.state === 'RETREAT_AFTER_DROP') {
+        setCommand(ctx, 'RETREAT');
+        if (ctx.time >= ctx.timerUntil) {
+          if (ctx.dropCountLeft >= 3) {
+            ctx.state = 'FINISHED';
+            ctx.missionFinished = true;
+            setCommand(ctx, 'STOP');
+            addNote(ctx, 'g1finish', 'Three valid cans are placed in the aluminium zone. Game One is complete.', 'good', 0);
+          } else {
+            ctx.state = 'TURN_RIGHT_TO_CANS';
+            ctx.timerUntil = ctx.time + 1.05;
+            setCommand(ctx, 'TURN_RIGHT');
+          }
+        }
+      }
+
+      else if (ctx.state === 'TURN_RIGHT_TO_CANS') {
+        setCommand(ctx, 'TURN_RIGHT');
+        if (ctx.time >= ctx.timerUntil) {
+          ctx.state = 'WAIT_BEFORE_SEARCH';
+          ctx.timerUntil = ctx.time + 0.40;
+          setCommand(ctx, 'STOP');
+        }
+      }
+
+      else if (ctx.state === 'WAIT_BEFORE_SEARCH') {
+        setCommand(ctx, 'STOP');
+        if (ctx.time >= ctx.timerUntil) {
+          ctx.state = 'SEARCH_SUGAR_CAN';
+          ctx.currentTarget = null;
+          ctx.lockedTarget = null;
+          setCommand(ctx, 'SEARCH_RIGHT');
+        }
+      }
+
+      else if (ctx.state === 'FINISHED') {
+        setCommand(ctx, 'STOP');
+      }
+
+      applyMotion(ctx, dt, 'can');
+    }
+
+    function updateGame2(ctx, dt) {
+      ctx.highlightIssue = '';
+
+      if (ctx.state === 'STARTUP_WAIT') {
+        setCommand(ctx, 'STOP');
+        if (ctx.time >= 0.6) {
+          ctx.state = 'SEARCH_TARGET';
+          addNote(ctx, 'g2begin', 'After the start pause, the robot begins the left-to-right search.', 'info', 0);
+        }
+      }
+
+      else if (ctx.state === 'SEARCH_TARGET') {
+        const choices = game2ChooseLeftmost(ctx);
+        if (choices.length === 0) {
+          ctx.state = 'FINISHED';
+          ctx.missionFinished = true;
+          setCommand(ctx, 'STOP');
+        } else {
+          const target = choices[0];
+          ctx.currentTarget = target;
+          ctx.targetSide = target.targetSide || '';
+          ctx.robot.clawMode = ctx.targetSide === 'right' ? 'box' : 'can';
+          const det = visionMeasure(ctx, target);
+          if (det.visible) {
+            ctx.lockedTarget = target;
+            ctx.state = 'APPROACH_TARGET';
+            addNote(ctx, 'g2lock', `Leftmost remaining object locked: ${target.name}.`, 'good', 0);
+            setCommand(ctx, 'STOP');
+          } else {
+            setCommand(ctx, 'SEARCH_RIGHT');
+          }
+        }
+      }
+
+      else if (ctx.state === 'APPROACH_TARGET') {
+        const { item: target, rawClass } = game2RawTarget(ctx);
+        if (!target) {
+          ctx.state = 'SEARCH_TARGET';
+          setCommand(ctx, 'SEARCH_RIGHT');
+        } else {
+          ctx.currentTarget = target;
+          ctx.targetSide = target.targetSide || '';
+          ctx.robot.clawMode = ctx.targetSide === 'right' ? 'box' : 'can';
+          const det = visionMeasure(ctx, target, rawClass);
+          ctx.detection = det;
+          ctx.rawTargetName = det.rawClass || '';
+          ctx.lockedTargetName = target.name;
+          let x1, x2, near, pulseDur, distThr;
+          if (target.targetSide === 'left') {
+            x1 = 320; x2 = 440; near = 650; pulseDur = 0.16; distThr = 23;
+          } else {
+            x1 = 320; x2 = 450; near = 540; pulseDur = 0.22; distThr = 25;
+          }
+          ctx.alignmentThresholds = { x1, x2 };
+          if (!det.visible) {
+            setCommand(ctx, 'SEARCH_RIGHT');
+          } else {
+            if (updatePulseCommand(ctx, 'target', 'CORRECT')) {
+              ctx.highlightIssue = 'pulse correction';
+            } else if (det.screenX < x1) {
+              startPulse(ctx, -1, 'target', pulseDur, 0.10, 'CORRECT');
+              let msg = 'The robot drifts left, so the target moves outside the left threshold and a correction pulse is applied.';
+              if (target.targetSide === 'right') {
+                msg = 'Box pickup is more demanding, so the robot uses a wider threshold and still needs visible pulse corrections.';
+              }
+              addNote(ctx, 'g2leftpulse', msg, 'warn', 2.8);
+              ctx.highlightIssue = 'left drift';
+            } else if (det.screenX > x2) {
+              startPulse(ctx, 1, 'target', pulseDur, 0.10, 'CORRECT');
+              addNote(ctx, 'g2rightpulse', 'A short overshoot appears and the robot corrects back to center.', 'warn', 2.8);
+              ctx.highlightIssue = 'overshoot';
+            } else if (det.widthPx < near && det.distanceCm > distThr) {
+              setCommand(ctx, 'APPROACH_FORWARD');
+            } else {
+              ctx.state = 'GRAB_TARGET';
+              ctx.timerUntil = ctx.time + 0.55;
+              setCommand(ctx, 'STOP');
+              let gripNote = 'The can enters the original claw, so the robot pauses to secure the grip.';
+              if (target.targetSide === 'right') {
+                gripNote = 'The box is handled in the wider pencil-assisted grip mode before retreating.';
+              }
+              addNote(ctx, 'g2grab', gripNote, 'good', 0);
+            }
+          }
+        }
+      }
+
+      else if (ctx.state === 'GRAB_TARGET') {
+        setCommand(ctx, 'STOP');
+        if (ctx.time >= ctx.timerUntil && ctx.lockedTarget) {
+          ctx.robot.carrying = ctx.lockedTarget;
+          ctx.lockedTarget.carried = true;
+          ctx.currentTarget = ctx.lockedTarget;
+          ctx.targetSide = ctx.currentTarget.targetSide || '';
+          ctx.state = 'RETREAT_AFTER_GRAB';
+          ctx.timerUntil = ctx.time + (ctx.targetSide === 'left' ? 1.35 : 1.60);
+          setCommand(ctx, 'RETREAT');
+          addNote(ctx, 'g2carry', 'The robot backs away to create space before turning toward the correct drop zone.', 'good', 0);
+        }
+      }
+
+      else if (ctx.state === 'RETREAT_AFTER_GRAB') {
+        setCommand(ctx, 'RETREAT');
+        if (ctx.time >= ctx.timerUntil) {
+          ctx.state = 'TURN_TO_BEACON';
+          ctx.timerUntil = ctx.time + 1.15;
+          setCommand(ctx, ctx.targetSide === 'left' ? 'TURN_LEFT' : 'TURN_RIGHT');
+          addNote(ctx, 'g2turn', `The robot turns toward the ${ctx.targetSide === 'left' ? 'green' : 'red'} beacon for zone alignment.`, 'info', 0);
+        }
+      }
+
+      else if (ctx.state === 'TURN_TO_BEACON') {
+        const beacon = game2Beacon(ctx, ctx.targetSide);
+        const det = visionMeasure(ctx, beacon);
+        if (det.visible) {
+          ctx.state = 'APPROACH_BEACON';
+          setCommand(ctx, 'STOP');
+        } else if (ctx.time >= ctx.timerUntil) {
+          ctx.state = 'SEARCH_BEACON';
+          setCommand(ctx, ctx.targetSide === 'left' ? 'TURN_LEFT' : 'TURN_RIGHT');
+        } else {
+          setCommand(ctx, ctx.targetSide === 'left' ? 'TURN_LEFT' : 'TURN_RIGHT');
+        }
+      }
+
+      else if (ctx.state === 'SEARCH_BEACON') {
+        const beacon = game2Beacon(ctx, ctx.targetSide);
+        const det = visionMeasure(ctx, beacon);
+        if (det.visible) {
+          ctx.state = 'APPROACH_BEACON';
+          setCommand(ctx, 'STOP');
+          addNote(ctx, 'g2beacon', 'The zone beacon becomes visible and takes over the alignment task.', 'good', 0);
+        } else {
+          setCommand(ctx, ctx.targetSide === 'left' ? 'TURN_LEFT' : 'TURN_RIGHT');
+        }
+      }
+
+      else if (ctx.state === 'APPROACH_BEACON') {
+        const beacon = game2Beacon(ctx, ctx.targetSide);
+        const det = visionMeasure(ctx, beacon);
+        ctx.detection = det;
+        ctx.rawTargetName = det.visible ? beacon.name : '';
+        ctx.lockedTargetName = beacon.name;
+        ctx.alignmentThresholds = { x1: 310, x2: 410 };
+        if (!det.visible) {
+          ctx.state = 'SEARCH_BEACON';
+          setCommand(ctx, ctx.targetSide === 'left' ? 'TURN_LEFT' : 'TURN_RIGHT');
+        } else {
+          if (updatePulseCommand(ctx, 'beacon', 'BEACON_CORRECT')) {
+            ctx.highlightIssue = 'pulse correction';
+          } else if (det.screenX < 310) {
+            startPulse(ctx, -1, 'beacon', 0.14, 0.08, 'BEACON_CORRECT');
+          } else if (det.screenX > 410) {
+            startPulse(ctx, 1, 'beacon', 0.14, 0.08, 'BEACON_CORRECT');
+          } else if (det.widthPx < 210 && det.distanceCm > 29) {
+            setCommand(ctx, 'APPROACH_FORWARD');
+          } else {
+            const count = ctx.targetSide === 'left' ? ctx.dropCountLeft : ctx.dropCountRight;
+            const sign = [-1, 1][Math.min(count, 1)];
+            ctx.state = 'TURN_TO_DROP_COLUMN';
+            ctx.timerUntil = ctx.time + (sign < 0 ? 0.48 : 0.62);
+            setCommand(ctx, sign < 0 ? 'TURN_LEFT' : 'TURN_RIGHT');
+            addNote(ctx, 'g2droproute', 'A side-specific drop route keeps the new item clear of the beacon stack and previous placements.', 'info', 0);
+          }
+        }
+      }
+
+      else if (ctx.state === 'TURN_TO_DROP_COLUMN') {
+        const count = ctx.targetSide === 'left' ? ctx.dropCountLeft : ctx.dropCountRight;
+        const sign = [-1, 1][Math.min(count, 1)];
+        setCommand(ctx, sign < 0 ? 'TURN_LEFT' : 'TURN_RIGHT');
+        if (ctx.time >= ctx.timerUntil) {
+          ctx.state = 'DRIVE_TO_DROP_COLUMN';
+          ctx.timerUntil = ctx.time + 0.82;
+          setCommand(ctx, 'SHIFT_FORWARD');
+        }
+      }
+
+      else if (ctx.state === 'DRIVE_TO_DROP_COLUMN') {
+        setCommand(ctx, 'SHIFT_FORWARD');
+        if (ctx.time >= ctx.timerUntil) {
+          const count = ctx.targetSide === 'left' ? ctx.dropCountLeft : ctx.dropCountRight;
+          const sign = [-1, 1][Math.min(count, 1)];
+          ctx.state = 'TURN_BACK_FROM_DROP';
+          ctx.timerUntil = ctx.time + (sign < 0 ? 0.62 : 0.48);
+          setCommand(ctx, sign < 0 ? 'TURN_RIGHT' : 'TURN_LEFT');
+        }
+      }
+
+      else if (ctx.state === 'TURN_BACK_FROM_DROP') {
+        const count = ctx.targetSide === 'left' ? ctx.dropCountLeft : ctx.dropCountRight;
+        const sign = [-1, 1][Math.min(count, 1)];
+        if (ctx.time >= ctx.timerUntil) {
+          ctx.state = 'APPROACH_DROP_AFTER_SHIFT';
+          ctx.timerUntil = ctx.time + 0.55;
+          setCommand(ctx, 'APPROACH_FORWARD');
+        } else {
+          setCommand(ctx, sign < 0 ? 'TURN_RIGHT' : 'TURN_LEFT');
+        }
+      }
+
+      else if (ctx.state === 'APPROACH_DROP_AFTER_SHIFT') {
+        setCommand(ctx, 'APPROACH_FORWARD');
+        if (ctx.time >= ctx.timerUntil) {
+          ctx.state = 'RELEASE_TARGET';
+          ctx.timerUntil = ctx.time + 0.45;
+          setCommand(ctx, 'STOP');
+        }
+      }
+
+      else if (ctx.state === 'RELEASE_TARGET') {
+        setCommand(ctx, 'STOP');
+        if (ctx.time >= ctx.timerUntil && ctx.robot.carrying) {
+          const item = ctx.robot.carrying;
+          if (ctx.targetSide === 'left') {
+            const spot = GAME2_LEFT_DROP_SPOTS[ctx.dropCountLeft];
+            item.x = spot.x; item.y = spot.y;
+            ctx.dropCountLeft += 1;
+          } else {
+            const spot = GAME2_RIGHT_DROP_SPOTS[ctx.dropCountRight];
+            item.x = spot.x; item.y = spot.y;
+            ctx.dropCountRight += 1;
+          }
+          item.carried = false;
+          item.delivered = true;
+          ctx.robot.carrying = null;
+          ctx.state = 'RETREAT_AFTER_DROP';
+          ctx.timerUntil = ctx.time + 1.65;
+          setCommand(ctx, 'RETREAT');
+          addNote(ctx, 'g2release', 'The item is released inside the correct zone and the robot retreats for the next search cycle.', 'good', 0);
+        }
+      }
+
+      else if (ctx.state === 'RETREAT_AFTER_DROP') {
+        setCommand(ctx, 'RETREAT');
+        if (ctx.time >= ctx.timerUntil) {
+          if (ctx.dropCountLeft >= 2 && ctx.dropCountRight >= 2) {
+            ctx.state = 'FINISHED';
+            ctx.missionFinished = true;
+            setCommand(ctx, 'STOP');
+            addNote(ctx, 'g2finish', 'All four required items are sorted into the correct zones. Game Two is complete.', 'good', 0);
+          } else {
+            ctx.state = 'TURN_BACK_TO_ITEMS';
+            ctx.timerUntil = ctx.time + 1.15;
+            setCommand(ctx, ctx.targetSide === 'left' ? 'TURN_RIGHT' : 'TURN_LEFT');
+          }
+        }
+      }
+
+      else if (ctx.state === 'TURN_BACK_TO_ITEMS') {
+        setCommand(ctx, ctx.targetSide === 'left' ? 'TURN_RIGHT' : 'TURN_LEFT');
+        if (ctx.time >= ctx.timerUntil) {
+          ctx.state = 'WAIT_BEFORE_SEARCH';
+          ctx.timerUntil = ctx.time + 0.40;
+          setCommand(ctx, 'STOP');
+        }
+      }
+
+      else if (ctx.state === 'WAIT_BEFORE_SEARCH') {
+        setCommand(ctx, 'STOP');
+        if (ctx.time >= ctx.timerUntil) {
+          ctx.state = 'SEARCH_TARGET';
+          ctx.currentTarget = null;
+          ctx.lockedTarget = null;
+          setCommand(ctx, 'SEARCH_RIGHT');
+        }
+      }
+
+      else if (ctx.state === 'FINISHED') {
+        setCommand(ctx, 'STOP');
+      }
+
+      applyMotion(ctx, dt, ctx.robot.clawMode);
+    }
+
+    function drawField(ctx2d, ctx) {
+      ctx2d.fillStyle = COLORS.fieldFill;
+      ctx2d.strokeStyle = COLORS.fieldBorder;
+      ctx2d.lineWidth = 7;
+      roundRect(ctx2d, FIELD_X0, FIELD_Y0, FIELD_PX, FIELD_PX, 8, true, true);
+
+      drawSemi(ctx2d, TOP_COLLECTION, ZONE_R, 0, Math.PI, COLORS.yellowZone);
+      drawSemi(ctx2d, BOTTOM_START, ZONE_R, Math.PI, Math.PI * 2, COLORS.yellowZone);
+      drawSemi(ctx2d, LEFT_ZONE, ZONE_R, -Math.PI / 2, Math.PI / 2, COLORS.pinkZone);
+      drawSemi(ctx2d, RIGHT_ZONE, ZONE_R, Math.PI / 2, Math.PI * 1.5, COLORS.pinkZone);
+
+      ctx2d.fillStyle = COLORS.ink;
+      ctx2d.font = '700 42px Inter, system-ui, sans-serif';
+      ctx2d.fillText(ctx.gameName, FIELD_X0 - 6, 52);
+      drawFieldLabel(ctx2d, 'Rubbish collection area', FIELD_X0 + FIELD_PX / 2, FIELD_Y0 - 24);
+      drawFieldLabel(ctx2d, 'Start zone', FIELD_X0 + FIELD_PX / 2, FIELD_Y1 - 36, { fill: 'rgba(255,255,255,0.72)' });
+      drawFieldLabel(ctx2d, 'Aluminium zone', FIELD_X0 + 128, FIELD_Y0 + FIELD_PX / 2 - 112);
+      drawFieldLabel(ctx2d, ['Beverage', 'carton zone'], FIELD_X1 - 112, FIELD_Y0 + FIELD_PX / 2 - 112);
+    }
+
+    function drawSemi(ctx2d, center, rCm, start, end, fill) {
+      const c = worldToPx(center.x, center.y);
+      const r = pxRadius(rCm);
+      ctx2d.beginPath();
+      ctx2d.moveTo(c.x, c.y);
+      ctx2d.arc(c.x, c.y, r, start, end);
+      ctx2d.closePath();
+      ctx2d.fillStyle = fill;
+      ctx2d.fill();
+    }
+
+    function roundRect(ctx2d, x, y, w, h, r, fill, stroke) {
+      ctx2d.beginPath();
+      ctx2d.moveTo(x + r, y);
+      ctx2d.arcTo(x + w, y, x + w, y + h, r);
+      ctx2d.arcTo(x + w, y + h, x, y + h, r);
+      ctx2d.arcTo(x, y + h, x, y, r);
+      ctx2d.arcTo(x, y, x + w, y, r);
+      ctx2d.closePath();
+      if (fill) ctx2d.fill();
+      if (stroke) ctx2d.stroke();
+    }
+
+    function drawPanelCard(ctx2d, x, y, w, h, radius = 20) {
+      ctx2d.fillStyle = COLORS.card;
+      ctx2d.strokeStyle = COLORS.line;
+      ctx2d.lineWidth = 1;
+      roundRect(ctx2d, x, y, w, h, radius, true, true);
+    }
+
+    function humanizeCode(value) {
+      if (!value) return '—';
+      return String(value)
+        .toLowerCase()
+        .replace(/_/g, ' ')
+        .replace(/\b\w/g, ch => ch.toUpperCase());
+    }
+
+    function truncateToWidth(ctx2d, text, maxWidth) {
+      const source = String(text ?? '—');
+      if (ctx2d.measureText(source).width <= maxWidth) return source;
+      let trimmed = source;
+      while (trimmed.length > 1 && ctx2d.measureText(`${trimmed}...`).width > maxWidth) {
+        trimmed = trimmed.slice(0, -1);
+      }
+      return `${trimmed}...`;
+    }
+
+    function wrapTextToWidth(ctx2d, text, maxWidth, maxLines = Infinity) {
+      const source = String(text ?? '').trim();
+      if (!source) return [];
+      const words = source.split(/\s+/);
+      const lines = [];
+      let line = '';
+      for (const word of words) {
+        const test = line ? `${line} ${word}` : word;
+        if (ctx2d.measureText(test).width <= maxWidth) {
+          line = test;
+          continue;
+        }
+        if (line) {
+          lines.push(line);
+          line = word;
+        } else {
+          lines.push(truncateToWidth(ctx2d, word, maxWidth));
+          line = '';
+        }
+        if (lines.length >= maxLines) {
+          return lines.slice(0, maxLines);
+        }
+      }
+      if (line) lines.push(line);
+      if (lines.length > maxLines) return lines.slice(0, maxLines);
+      return lines;
+    }
+
+    function drawWrappedText(ctx2d, text, x, y, maxWidth, lineHeight, maxLines = Infinity) {
+      const lines = wrapTextToWidth(ctx2d, text, maxWidth, maxLines);
+      lines.forEach((line, index) => ctx2d.fillText(line, x, y + index * lineHeight));
+      return lines.length;
+    }
+
+    function drawFieldLabel(ctx2d, lines, x, y, options = {}) {
+      const content = Array.isArray(lines) ? lines : [lines];
+      const fill = options.fill || 'rgba(255,255,255,0.84)';
+      ctx2d.save();
+      ctx2d.font = '600 16px Inter, system-ui, sans-serif';
+      const lineHeight = 20;
+      const width = Math.max(...content.map(line => ctx2d.measureText(line).width)) + 28;
+      const height = content.length * lineHeight + 14;
+      ctx2d.fillStyle = fill;
+      ctx2d.strokeStyle = 'rgba(210, 212, 216, 0.95)';
+      roundRect(ctx2d, x - width / 2, y - height / 2, width, height, 14, true, true);
+      ctx2d.fillStyle = COLORS.ink;
+      ctx2d.textAlign = 'center';
+      ctx2d.textBaseline = 'middle';
+      content.forEach((line, index) => ctx2d.fillText(line, x, y - ((content.length - 1) * lineHeight) / 2 + index * lineHeight));
+      ctx2d.restore();
+    }
+
+    function drawInfoCell(ctx2d, label, value, x, y, w, accent = COLORS.ink) {
+      ctx2d.fillStyle = COLORS.muted;
+      ctx2d.font = '14px Inter, system-ui, sans-serif';
+      ctx2d.fillText(label, x, y);
+      ctx2d.fillStyle = accent;
+      ctx2d.font = '600 17px Inter, system-ui, sans-serif';
+      ctx2d.fillText(truncateToWidth(ctx2d, value, w), x, y + 22);
+    }
+
+    function drawItem(ctx2d, item, carried = false) {
+      const pos = worldToPx(item.x, item.y);
+      const style = ITEM_STYLE[item.styleName || item.name];
+      const family = itemFamily(item.name);
+      ctx2d.save();
+      if (item.name === 'green ball' || item.name === 'red ball') {
+        const rr = pxRadius(4.0);
+        ctx2d.beginPath();
+        ctx2d.arc(pos.x, pos.y, rr, 0, Math.PI * 2);
+        ctx2d.fillStyle = style.color;
+        ctx2d.fill();
+        ctx2d.lineWidth = 2;
+        ctx2d.strokeStyle = '#ffffff';
+        ctx2d.stroke();
+        const p = rr * 0.34;
+        ctx2d.beginPath();
+        ctx2d.arc(pos.x, pos.y, p, 0, Math.PI * 2);
+        ctx2d.fillStyle = '#141414';
+        ctx2d.fill();
+        for (let i = 0; i < 5; i++) {
+          const ang = i * Math.PI * 2 / 5;
+          const px = pos.x + Math.cos(ang) * rr * 0.55;
+          const py = pos.y + Math.sin(ang) * rr * 0.55;
+          ctx2d.beginPath();
+          ctx2d.arc(px, py, p * 0.55, 0, Math.PI * 2);
+          ctx2d.fill();
+        }
+      } else if (item.name === 'fanta' || item.name === 'schweppe') {
+        const w = pxRadius(6.0);
+        const h = pxRadius(9.2);
+        ctx2d.fillStyle = style.color;
+        ctx2d.strokeStyle = '#ffffff';
+        ctx2d.lineWidth = 2;
+        roundRect(ctx2d, pos.x - w / 2, pos.y - h / 2, w, h, 5, true, true);
+        ctx2d.fillStyle = item.name === 'fanta' ? '#ffffff' : '#282828';
+        ctx2d.font = '16px Inter, system-ui, sans-serif';
+        ctx2d.textAlign = 'center';
+        ctx2d.textBaseline = 'middle';
+        ctx2d.fillText(style.short, pos.x, pos.y);
+      } else if (family === 'can') {
+        const rr = pxRadius(item.name === 'coca cola can zero sugar' ? 3.2 : 3.0);
+        ctx2d.beginPath();
+        ctx2d.arc(pos.x, pos.y, rr, 0, Math.PI * 2);
+        ctx2d.fillStyle = style.color;
+        ctx2d.fill();
+        ctx2d.strokeStyle = '#ffffff';
+        ctx2d.lineWidth = 2;
+        ctx2d.stroke();
+        ctx2d.fillStyle = '#ffffff';
+        ctx2d.font = '16px Inter, system-ui, sans-serif';
+        ctx2d.textAlign = 'center';
+        ctx2d.textBaseline = 'middle';
+        ctx2d.fillText(style.short, pos.x, pos.y + 0.5);
+      } else if (family === 'box') {
+        const w = pxRadius(7.4);
+        const h = pxRadius(5.5);
+        ctx2d.fillStyle = style.color;
+        ctx2d.strokeStyle = '#dcdcdc';
+        ctx2d.lineWidth = 2;
+        roundRect(ctx2d, pos.x - w / 2, pos.y - h / 2, w, h, 7, true, true);
+        ctx2d.fillStyle = '#404040';
+        ctx2d.font = '16px Inter, system-ui, sans-serif';
+        ctx2d.textAlign = 'center';
+        ctx2d.textBaseline = 'middle';
+        ctx2d.fillText(style.short, pos.x, pos.y);
+      } else if (item.name === 'pencil') {
+        const w = pxRadius(14);
+        const h = pxRadius(1.4);
+        ctx2d.fillStyle = style.color;
+        ctx2d.strokeStyle = '#b47832';
+        ctx2d.lineWidth = 2;
+        roundRect(ctx2d, pos.x - w / 2, pos.y - h / 2, w, h, 3, true, true);
+      }
+      if (carried) {
+        const halo = pxRadius(6.2);
+        ctx2d.beginPath();
+        ctx2d.arc(pos.x, pos.y, halo, 0, Math.PI * 2);
+        ctx2d.strokeStyle = COLORS.accent;
+        ctx2d.lineWidth = 3;
+        ctx2d.stroke();
+      }
+      ctx2d.restore();
+    }
+
+    function drawPath(ctx2d, ctx) {
+      if (ctx.path.length < 2) return;
+      ctx2d.save();
+      ctx2d.strokeStyle = 'rgba(120, 140, 230, 0.9)';
+      ctx2d.lineWidth = 5;
+      ctx2d.beginPath();
+      const first = worldToPx(ctx.path[0].x, ctx.path[0].y);
+      ctx2d.moveTo(first.x, first.y);
+      for (let i = 1; i < ctx.path.length; i++) {
+        const p = worldToPx(ctx.path[i].x, ctx.path[i].y);
+        ctx2d.lineTo(p.x, p.y);
+      }
+      ctx2d.stroke();
+      const last = worldToPx(ctx.path[ctx.path.length - 1].x, ctx.path[ctx.path.length - 1].y);
+      ctx2d.fillStyle = 'rgba(120, 140, 230, 1)';
+      ctx2d.beginPath();
+      ctx2d.arc(last.x, last.y, 4, 0, Math.PI * 2);
+      ctx2d.fill();
+      ctx2d.restore();
+    }
+
+    function drawRobot(ctx2d, ctx) {
+      const p = worldToPx(ctx.robot.x, ctx.robot.y);
+      const scale = FIELD_PX / ARENA;
+      const bodyW = ctx.robot.width * scale;
+      const bodyH = ctx.robot.height * scale;
+      const t = ctx.robot.theta + Math.PI / 2;
+      const rot = (px, py) => ({
+        x: p.x + Math.cos(t) * px - Math.sin(t) * py,
+        y: p.y + Math.sin(t) * px + Math.cos(t) * py,
+      });
+
+      const body = [
+        rot(-bodyW / 2, -bodyH / 2),
+        rot(bodyW / 2, -bodyH / 2),
+        rot(bodyW / 2, bodyH / 2),
+        rot(-bodyW / 2, bodyH / 2),
+      ];
+      ctx2d.fillStyle = COLORS.robot;
+      ctx2d.beginPath();
+      ctx2d.moveTo(body[0].x, body[0].y);
+      body.slice(1).forEach(pt => ctx2d.lineTo(pt.x, pt.y));
+      ctx2d.closePath();
+      ctx2d.fill();
+
+      const ww = bodyW * 0.18;
+      const wh = bodyH * 0.72;
+      [-bodyW / 2 - ww * 0.45, bodyW / 2 + ww * 0.45].forEach(sx => {
+        const wheel = [
+          rot(sx - ww / 2, -wh / 2), rot(sx + ww / 2, -wh / 2), rot(sx + ww / 2, wh / 2), rot(sx - ww / 2, wh / 2),
+        ];
+        ctx2d.fillStyle = COLORS.wheel;
+        ctx2d.beginPath();
+        ctx2d.moveTo(wheel[0].x, wheel[0].y);
+        wheel.slice(1).forEach(pt => ctx2d.lineTo(pt.x, pt.y));
+        ctx2d.closePath();
+        ctx2d.fill();
+      });
+
+      const roof = [
+        rot(-bodyW * 0.28, -bodyH * 0.18),
+        rot(bodyW * 0.28, -bodyH * 0.18),
+        rot(bodyW * 0.28, bodyH * 0.18),
+        rot(-bodyW * 0.28, bodyH * 0.18),
+      ];
+      ctx2d.fillStyle = COLORS.wheel2;
+      ctx2d.beginPath();
+      ctx2d.moveTo(roof[0].x, roof[0].y);
+      roof.slice(1).forEach(pt => ctx2d.lineTo(pt.x, pt.y));
+      ctx2d.closePath();
+      ctx2d.fill();
+
+      const nose = rot(0, -bodyH * 0.72);
+      const tail1 = rot(-bodyW * 0.18, -bodyH * 0.25);
+      const tail2 = rot(bodyW * 0.18, -bodyH * 0.25);
+      ctx2d.fillStyle = '#ffffff';
+      ctx2d.beginPath();
+      ctx2d.moveTo(nose.x, nose.y);
+      ctx2d.lineTo(tail1.x, tail1.y);
+      ctx2d.lineTo(tail2.x, tail2.y);
+      ctx2d.closePath();
+      ctx2d.fill();
+
+      const armLen = bodyH * 0.60;
+      const frontBase = rot(0, -bodyH / 2);
+      const spread = ctx.robot.clawMode === 'can' ? bodyW * 0.34 : bodyW * 0.62;
+      const stalkTop = rot(0, -bodyH / 2 - armLen * 0.45);
+      ctx2d.strokeStyle = COLORS.claw;
+      ctx2d.lineWidth = 4;
+      ctx2d.beginPath();
+      ctx2d.moveTo(frontBase.x, frontBase.y);
+      ctx2d.lineTo(stalkTop.x, stalkTop.y);
+      ctx2d.stroke();
+      const leftA = rot(-spread * 0.6, -bodyH / 2 - armLen * 0.45);
+      const leftB = rot(-spread, -bodyH / 2 - armLen);
+      const rightA = rot(spread * 0.6, -bodyH / 2 - armLen * 0.45);
+      const rightB = rot(spread, -bodyH / 2 - armLen);
+      ctx2d.beginPath();
+      ctx2d.moveTo(stalkTop.x, stalkTop.y); ctx2d.lineTo(leftA.x, leftA.y); ctx2d.lineTo(leftB.x, leftB.y); ctx2d.stroke();
+      ctx2d.beginPath();
+      ctx2d.moveTo(stalkTop.x, stalkTop.y); ctx2d.lineTo(rightA.x, rightA.y); ctx2d.lineTo(rightB.x, rightB.y); ctx2d.stroke();
+
+      if (ctx.robot.clawMode === 'box') {
+        const l1 = rot(-spread - 3, -bodyH / 2 - armLen * 0.72);
+        const l2 = rot(-spread - 3, -bodyH / 2 - armLen * 1.05);
+        const r1 = rot(spread + 3, -bodyH / 2 - armLen * 0.72);
+        const r2 = rot(spread + 3, -bodyH / 2 - armLen * 1.05);
+        ctx2d.strokeStyle = '#ebbe5a';
+        ctx2d.lineWidth = 5;
+        ctx2d.beginPath(); ctx2d.moveTo(l1.x, l1.y); ctx2d.lineTo(l2.x, l2.y); ctx2d.stroke();
+        ctx2d.beginPath(); ctx2d.moveTo(r1.x, r1.y); ctx2d.lineTo(r2.x, r2.y); ctx2d.stroke();
+      }
+
+      if (ctx.robot.carrying) drawItem(ctx2d, ctx.robot.carrying, true);
+    }
+
+    function drawHUD(ctx2d, ctx) {
+      ctx2d.fillStyle = COLORS.panel;
+      ctx2d.strokeStyle = COLORS.line;
+      ctx2d.lineWidth = 2;
+      roundRect(ctx2d, PANEL_X0, 28, PANEL_X1 - PANEL_X0, H - 56, 26, true, true);
+
+      const panelW = PANEL_X1 - PANEL_X0;
+      const cardX = PANEL_X0 + 18;
+      const cardW = panelW - 36;
+      const headerY = 46;
+      const headerH = 194;
+      const perceptionY = headerY + headerH + 18;
+      const perceptionH = 198;
+      const footerH = 126;
+      const footerY = H - 46 - footerH;
+      const noteY = perceptionY + perceptionH + 18;
+      const noteH = footerY - noteY - 18;
+
+      drawPanelCard(ctx2d, cardX, headerY, cardW, headerH);
+      ctx2d.fillStyle = COLORS.ink;
+      ctx2d.font = '700 34px Inter, system-ui, sans-serif';
+      ctx2d.fillText(`${ctx.gameName} — simulator`, cardX + 22, headerY + 40);
+      ctx2d.fillStyle = COLORS.muted;
+      ctx2d.font = '18px Inter, system-ui, sans-serif';
+      drawWrappedText(ctx2d, ctx.phaseLabel, cardX + 22, headerY + 74, cardW - 44, 24, 2);
+      const summaryRows = [
+        ['State', humanizeCode(ctx.state), COLORS.ink],
+        ['Command', humanizeCode(ctx.command), COLORS.accent],
+        ['Claw mode', ctx.robot.clawMode === 'box' ? 'Box grip' : 'Can grip', COLORS.ink],
+        ['Progress', ctx.gameName === 'Game One' ? `${ctx.dropCountLeft} of 3 placed` : `Left ${ctx.dropCountLeft} / 2, Right ${ctx.dropCountRight} / 2`, COLORS.good],
+      ];
+      let summaryY = headerY + 118;
+      summaryRows.forEach(([label, value, accent]) => {
+        ctx2d.fillStyle = COLORS.muted;
+        ctx2d.font = '15px Inter, system-ui, sans-serif';
+        ctx2d.fillText(label, cardX + 22, summaryY);
+        ctx2d.fillStyle = accent;
+        ctx2d.font = '700 18px Inter, system-ui, sans-serif';
+        ctx2d.fillText(truncateToWidth(ctx2d, value, cardW - 164), cardX + 142, summaryY);
+        summaryY += 24;
+      });
+
+      drawPanelCard(ctx2d, cardX, perceptionY, cardW, perceptionH);
+      ctx2d.fillStyle = COLORS.ink;
+      ctx2d.font = '700 22px Inter, system-ui, sans-serif';
+      ctx2d.fillText('Perception snapshot', cardX + 18, perceptionY + 34);
+
+      const rows = [
+        ['Raw detection', ctx.rawTargetName || '—'],
+        ['Locked target', ctx.lockedTargetName || '—'],
+        ['Distance', ctx.detection.visible ? `${ctx.detection.distanceCm.toFixed(1)} cm` : '—'],
+        ['Apparent width', ctx.detection.visible ? `${Math.round(ctx.detection.widthPx)} px` : '—'],
+      ];
+      const cellGap = 18;
+      const cellW = (cardW - 36 - cellGap) / 2;
+      rows.forEach(([k, v], index) => {
+        const col = index % 2;
+        const row = Math.floor(index / 2);
+        const x = cardX + 18 + col * (cellW + cellGap);
+        const y = perceptionY + 66 + row * 44;
+        drawInfoCell(ctx2d, k, v, x, y, cellW - 4);
+      });
+
+      const barY = perceptionY + perceptionH - 34;
+      ctx2d.fillStyle = COLORS.muted;
+      ctx2d.font = '16px Inter, system-ui, sans-serif';
+      ctx2d.fillText('Camera alignment view', cardX + 18, barY - 18);
+      const bx0 = cardX + 18;
+      const bx1 = cardX + cardW - 18;
+      ctx2d.fillStyle = '#f0f2f5';
+      ctx2d.strokeStyle = COLORS.line;
+      roundRect(ctx2d, bx0, barY, bx1 - bx0, 18, 9, true, true);
+      const sx = v => bx0 + (v / 800) * (bx1 - bx0);
+      ctx2d.strokeStyle = COLORS.warn;
+      ctx2d.lineWidth = 2;
+      ctx2d.beginPath(); ctx2d.moveTo(sx(ctx.alignmentThresholds.x1), barY - 2); ctx2d.lineTo(sx(ctx.alignmentThresholds.x1), barY + 22); ctx2d.stroke();
+      ctx2d.beginPath(); ctx2d.moveTo(sx(ctx.alignmentThresholds.x2), barY - 2); ctx2d.lineTo(sx(ctx.alignmentThresholds.x2), barY + 22); ctx2d.stroke();
+      ctx2d.strokeStyle = COLORS.accent;
+      ctx2d.beginPath(); ctx2d.moveTo(sx(400), barY - 5); ctx2d.lineTo(sx(400), barY + 23); ctx2d.stroke();
+      if (ctx.detection.visible && ctx.detection.screenX != null) {
+        const mx = sx(ctx.detection.screenX);
+        ctx2d.fillStyle = COLORS.teal;
+        ctx2d.strokeStyle = '#ffffff';
+        ctx2d.lineWidth = 2;
+        ctx2d.beginPath();
+        ctx2d.arc(mx, barY + 9, 8, 0, Math.PI * 2);
+        ctx2d.fill();
+        ctx2d.stroke();
+      }
+
+      drawPanelCard(ctx2d, cardX, noteY, cardW, noteH);
+      ctx2d.fillStyle = COLORS.ink;
+      ctx2d.font = '700 22px Inter, system-ui, sans-serif';
+      ctx2d.fillText('What is happening', cardX + 18, noteY + 34);
+      const recent = ctx.notes.filter(n => ctx.time - n.t <= 10).slice(-3);
+      yy = noteY + 66;
+      const noteBottom = noteY + noteH - 18;
+      recent.forEach(note => {
+        let color = COLORS.muted;
+        if (note.category === 'good') color = COLORS.good;
+        if (note.category === 'warn') color = COLORS.warn;
+        const lines = wrapTextToWidth(ctx2d, note.text, cardW - 78, 3);
+        const blockH = lines.length * 20 + 16;
+        if (yy + blockH > noteBottom) return;
+        ctx2d.fillStyle = color;
+        ctx2d.beginPath();
+        ctx2d.arc(cardX + 28, yy - 5, 4, 0, Math.PI * 2);
+        ctx2d.fill();
+        ctx2d.fillStyle = COLORS.ink;
+        ctx2d.font = '16px Inter, system-ui, sans-serif';
+        lines.forEach((line, index) => ctx2d.fillText(line, cardX + 42, yy + index * 20));
+        yy += blockH;
+      });
+
+      if (!recent.length) {
+        ctx2d.fillStyle = COLORS.muted;
+        ctx2d.font = '16px Inter, system-ui, sans-serif';
+        ctx2d.fillText('Waiting for the next state transition...', cardX + 18, noteY + 72);
+      }
+
+      drawPanelCard(ctx2d, cardX, footerY, cardW, footerH);
+      ctx2d.fillStyle = COLORS.muted;
+      ctx2d.font = '600 13px Inter, system-ui, sans-serif';
+      ctx2d.fillText('Run metrics', cardX + 18, footerY + 24);
+      ctx2d.font = '15px Inter, system-ui, sans-serif';
+      ctx2d.fillText('Goal', cardX + 18, footerY + 52);
+      ctx2d.fillStyle = COLORS.ink;
+      ctx2d.font = '600 16px Inter, system-ui, sans-serif';
+      drawWrappedText(ctx2d, ctx.metrics.goal, cardX + 92, footerY + 52, cardW - 110, 18, 2);
+
+      ctx2d.fillStyle = COLORS.muted;
+      ctx2d.font = '15px Inter, system-ui, sans-serif';
+      ctx2d.fillText('Confidence', cardX + 18, footerY + 92);
+      ctx2d.fillStyle = COLORS.ink;
+      ctx2d.font = '600 16px Inter, system-ui, sans-serif';
+      ctx2d.fillText(ctx.metrics.conf, cardX + 104, footerY + 92);
+      ctx2d.fillStyle = COLORS.muted;
+      ctx2d.fillText('Baseline issue', cardX + 174, footerY + 92);
+      ctx2d.fillStyle = COLORS.ink;
+      ctx2d.fillText(truncateToWidth(ctx2d, ctx.metrics.issue, 170), cardX + 282, footerY + 92);
+      ctx2d.fillStyle = COLORS.muted;
+      ctx2d.fillText('Live issue', cardX + 18, footerY + 116);
+      ctx2d.fillStyle = ctx.highlightIssue ? COLORS.warn : COLORS.good;
+      ctx2d.fillText(ctx.highlightIssue || 'Stable tracking', cardX + 92, footerY + 116);
+    }
+
+    function render(ctx2d, ctx) {
+      ctx2d.clearRect(0, 0, W, H);
+      ctx2d.fillStyle = COLORS.bg;
+      ctx2d.fillRect(0, 0, W, H);
+      drawField(ctx2d, ctx);
+      drawPath(ctx2d, ctx);
+
+      const spots = ctx.gameName === 'Game One' ? GAME1_DROP_SPOTS : GAME2_LEFT_DROP_SPOTS.concat(GAME2_RIGHT_DROP_SPOTS);
+      ctx2d.strokeStyle = '#c8cad0';
+      ctx2d.lineWidth = 1;
+      spots.forEach(s => {
+        const p = worldToPx(s.x, s.y);
+        const rr = pxRadius(3.0);
+        ctx2d.beginPath();
+        ctx2d.arc(p.x, p.y, rr, 0, Math.PI * 2);
+        ctx2d.stroke();
+      });
+
+      ctx.items.forEach(item => {
+        if (ctx.robot.carrying === item) return;
+        drawItem(ctx2d, item, false);
+      });
+
+      if (ctx.currentTarget && !ctx.currentTarget.delivered && !ctx.currentTarget.carried) {
+        const p = worldToPx(ctx.currentTarget.x, ctx.currentTarget.y);
+        const rr = pxRadius(itemFamily(ctx.currentTarget.name) === 'box' ? 6.0 : 5.3);
+        ctx2d.strokeStyle = COLORS.accent;
+        ctx2d.lineWidth = 3;
+        ctx2d.beginPath();
+        ctx2d.arc(p.x, p.y, rr, 0, Math.PI * 2);
+        ctx2d.stroke();
+      }
+
+      drawRobot(ctx2d, ctx);
+      drawHUD(ctx2d, ctx);
+    }
+
+    let canvas = document.getElementById('simCanvas');
+    let ctx2d = canvas.getContext('2d');
+    let currentMode = 'game1';
+    let sim = initGame1();
+    let playing = true;
+    let speedIndex = 4;
+    let lastTs = null;
+
+    function resetSim() {
+      sim = currentMode === 'game1' ? initGame1() : initGame2();
+      lastTs = null;
+    }
+
+    function switchMode(mode) {
+      currentMode = mode;
+      document.getElementById('btnGame1').classList.toggle('active', mode === 'game1');
+      document.getElementById('btnGame2').classList.toggle('active', mode === 'game2');
+      resetSim();
+    }
+
+    function step(dt) {
+      if (currentMode === 'game1') updateGame1(sim, dt);
+      else updateGame2(sim, dt);
+      sim.time += dt;
+    }
+
+    function loop(ts) {
+      if (lastTs == null) lastTs = ts;
+      const frameDt = Math.min((ts - lastTs) / 1000, 0.04);
+      lastTs = ts;
+      if (playing) {
+        const dt = frameDt * SPEEDS[speedIndex];
+        step(dt);
+      }
+      render(ctx2d, sim);
+      document.getElementById('chipState').textContent = `State: ${sim.state}`;
+      requestAnimationFrame(loop);
+    }
+
+    document.getElementById('btnGame1').addEventListener('click', () => switchMode('game1'));
+    document.getElementById('btnGame2').addEventListener('click', () => switchMode('game2'));
+    document.getElementById('btnPlayPause').addEventListener('click', () => {
+      playing = !playing;
+      document.getElementById('btnPlayPause').textContent = playing ? 'Pause' : 'Play';
+    });
+    document.getElementById('btnReset').addEventListener('click', () => resetSim());
+    document.getElementById('btnSpeed').addEventListener('click', () => {
+      speedIndex = (speedIndex + 1) % SPEEDS.length;
+      document.getElementById('btnSpeed').textContent = `Speed: ${SPEEDS[speedIndex].toFixed(1)}×`;
+    });
+
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
